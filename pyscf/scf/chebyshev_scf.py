@@ -29,7 +29,7 @@ import numpy
 import numpy.polynomial.chebyshev as C
 from pyscf.lo.orth import lowdin
 from scipy.optimize import bisect
-from scipy.sparse import block_diag, coo_matrix, csr_matrix
+from scipy.sparse import coo_matrix, csr_matrix
 from scipy.sparse.csgraph import connected_components
 
 from pyscf import __config__
@@ -100,8 +100,7 @@ def inv_sqrt(s, thresh=OVLP_THRESHOLD, full_inv=False):
         The inverse square-root transformation matrix.
     """
     if full_inv:
-        evals, evecs = numpy.linalg.eigh(s)
-        X = evecs @ numpy.diag(evals**-0.5) @ evecs.conj().T
+        X = lowdin(s)
         return X
     else:
         return block_inv_sqrt(s, thresh=thresh)
@@ -152,10 +151,9 @@ class ChebyshevSCF(hf.SCF):
         hf.SCF.__init__(self, mol)
         self.chebyshev_degree = 30
         self.beta = 50
-        self.degree_safety_factor = 2.0
         self.rng_seed = 0
         self.chebyshev_moments = None
-        self.ovlp_inv = to_csr_matrix(self.get_ovlp_inv_sqrt(), threshold=MATRIX_THRESHOLD)
+        self.ovlp_inv = None
         self.a = None
         self.b = None
         # Restricted orbitals are shared by alpha and beta electrons.
@@ -179,8 +177,7 @@ class ChebyshevSCF(hf.SCF):
         self._keys = self._keys.union(
             [
                 "chebyshev_degree",
-                "chebyshev_filter_interval",
-                "degree_safety_factor",
+                "beta",
                 "rng_seed",
                 "chebyshev_moments",
                 "ovlp_inv",
@@ -351,14 +348,6 @@ class ChebyshevSCF(hf.SCF):
         coeffs = C.chebinterpolate(occupation, n)
         return coeffs
 
-    def _get_chebyshev_vec(self, coeffs):
-        assert len(coeffs) == len(self.chebyshev_sequences)
-        vec = self.chebyshev_sequences[0] * coeffs[0]
-        for v in self.chebyshev_sequences[1:]:
-            k = self.chebyshev_sequences.index(v)
-            vec += v * coeffs[k]
-        return vec
-
     def _orthogonalize_fock(self, fock):
         """
         Orthogonalize the AO-basis Fock matrix using the inverse square-root
@@ -375,7 +364,7 @@ class ChebyshevSCF(hf.SCF):
             Orthogonalized AO-basis Fock matrix.
         """
         X = self.ovlp_inv
-        fock_ortho = X @ fock @ X.T
+        fock_ortho = X @ fock @ X.conj().T
         fock_ortho = to_csr_matrix(fock_ortho, threshold=MATRIX_THRESHOLD)
         return fock_ortho
 
@@ -383,11 +372,6 @@ class ChebyshevSCF(hf.SCF):
         """
         Estimate the orthogonalized-Fock spectral bounds ``(a, b, emin, emax)``
         used to normalize the Chebyshev expansion interval.
-
-        Factored out of :meth:`make_rdm1_chebyshev` so the same estimate can
-        be obtained once, up front, to auto-size ``chebyshev_degree`` before
-        the SCF loop starts (see :meth:`_auto_degree`), without duplicating
-        the overlap-orthogonalization and eigenvalue-bound logic.
 
         Parameters
         ----------
@@ -489,7 +473,7 @@ class ChebyshevSCF(hf.SCF):
         dm = self.g * y.toarray()
 
         dm = to_csr_matrix(dm, threshold=MATRIX_THRESHOLD)
-        dm_ao = X @ dm @ X.T
+        dm_ao = X @ dm @ X.conj().T
         return dm_ao.toarray()
 
     def make_rdm1(self, mo_coeff=None, mo_occ=None, **kwargs):
@@ -595,6 +579,7 @@ class ChebyshevSCF(hf.SCF):
             Final total SCF energy.
         """
         self.build(self.mol)
+        self.ovlp_inv = to_csr_matrix(self.get_ovlp_inv_sqrt(), threshold=MATRIX_THRESHOLD)
 
         dm1 = self.get_init_guess(self.mol, dm1=dm1)
         fock = self.get_fock(dm=dm1)
@@ -630,7 +615,7 @@ class ChebyshevSCF(hf.SCF):
                 e,
                 ne,
             )
-            if diff < conv_dm or abs(e - e_save) < conv_e:
+            if diff < conv_dm and abs(e - e_save) < conv_e:
                 converged = True
                 break
             dm1 = dm_new
@@ -670,6 +655,6 @@ if __name__ == "__main__":
 
     mol = gto.M(atom="H 0 0 0; H 0 0 0.74", basis="sto-3g", verbose=4)
     mf = ChebyshevSCF(mol)
-    mf.chebyshev_degree = 50
+    mf.chebyshev_degree = 100
     mf.beta = 40.0
     mf.kernel()
