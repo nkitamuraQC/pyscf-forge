@@ -158,6 +158,7 @@ class ChebyshevSCF(hf.SCF):
         self.b = None
         # Restricted orbitals are shared by alpha and beta electrons.
         self.g = 2
+        self.mu = None
 
     def build(self, mol=None):
         """
@@ -184,6 +185,7 @@ class ChebyshevSCF(hf.SCF):
                 "a",
                 "b",
                 "g",
+                "mu",
             ]
         )
         return self
@@ -336,6 +338,12 @@ class ChebyshevSCF(hf.SCF):
         ndarray
             Coefficients from order zero through ``n``.
         """
+        if beta is None:
+            beta = self.beta
+        if mu is None:
+            mu = self.mu
+        if a is None:
+            a = self.a
         beta_tilde = beta * a
 
         def occupation(x):
@@ -414,7 +422,7 @@ class ChebyshevSCF(hf.SCF):
         return a, b, emin, emax
 
     def make_rdm1_chebyshev(
-        self, normalized_fock, mu, nmo=None, degree=None, beta=None, a=None, b=None
+        self, normalized_fock, mu, nmo=None, degree=None, beta=None, a=None
     ):
         """
         Construct an AO-basis one-particle density matrix by Chebyshev filtering.
@@ -431,6 +439,8 @@ class ChebyshevSCF(hf.SCF):
             Chebyshev expansion degree.  Defaults to ``self.chebyshev_degree``.
         beta : float, optional
             Inverse-temperature parameter.  Defaults to ``self.beta``.
+        a : float, optional
+            Energy scaling factor used in the spectral normalization.  Defaults
 
         Returns
         -------
@@ -441,28 +451,28 @@ class ChebyshevSCF(hf.SCF):
             degree = self.chebyshev_degree
         if nmo is None:
             nmo = normalized_fock.shape[0]
+        if mu is None:
+            mu = self.mu
         if beta is None:
             beta = self.beta
         if a is None:
             a = self.a
-        if b is None:
-            b = self.b
 
         X = self.ovlp_inv
 
         normalized_fock = to_csr_matrix(normalized_fock.toarray(), threshold=MATRIX_THRESHOLD)
 
-        dm = numpy.zeros((normalized_fock.shape[0], normalized_fock.shape[0]))
+        dm = numpy.zeros((nmo, nmo), dtype=normalized_fock.dtype1)
 
         identity = csr_matrix(
             (
-                numpy.ones(normalized_fock.shape[0]),
+                numpy.ones(nmo),
                 (
-                    numpy.arange(normalized_fock.shape[0]),
-                    numpy.arange(normalized_fock.shape[0]),
+                    numpy.arange(nmo),
+                    numpy.arange(nmo),
                 ),
             ),
-            shape=(normalized_fock.shape[0], normalized_fock.shape[0]),
+            shape=(nmo, nmo),
         )
 
         # for i in range(nmo):
@@ -522,6 +532,8 @@ class ChebyshevSCF(hf.SCF):
         float
             Difference between filtered electron count and ``nelec``.
         """
+        if mu is None:
+            mu = self.mu
         coeffs = self._calc_coeff(
             self.chebyshev_degree, beta=self.beta, mu=mu, a=self.a
         )
